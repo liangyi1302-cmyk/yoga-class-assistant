@@ -1,1 +1,468 @@
-
+import { poses, poseById } from "./poses.js";
+import { createPoseAsset } from "./assets.js";
+const $ = (id) => document.getElementById(id),
+  KEY = "yoga-class-assistant-v1-courses";
+const uid = () =>
+  globalThis.crypto?.randomUUID?.() ||
+  `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const fresh = () => ({
+  id: uid(),
+  title: "未命名课程",
+  targetMinutes: 60,
+  level: "初级",
+  notes: "",
+  items: [],
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+});
+let current = fresh(),
+  saved = loadSaved(),
+  classIndex = 0,
+  remaining = 0,
+  running = false,
+  timer = null,
+  toastTimer;
+function loadSaved() {
+  try {
+    const a = JSON.parse(localStorage.getItem(KEY) || "[]");
+    return Array.isArray(a) ? a.filter(validCourse) : [];
+  } catch {
+    return [];
+  }
+}
+function validCourse(c) {
+  return (
+    c &&
+    typeof c.id === "string" &&
+    typeof c.title === "string" &&
+    Array.isArray(c.items) &&
+    c.items.length <= 300 &&
+    c.items.every(
+      (i) =>
+        i &&
+        typeof i.poseId === "string" &&
+        Number.isInteger(i.seconds) &&
+        i.seconds >= 1 &&
+        i.seconds <= 36000
+    )
+  );
+}
+function persist() {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(saved));
+    return true;
+  } catch {
+    notify("存储失败：请检查浏览器存储空间或隐私模式");
+    return false;
+  }
+}
+function notify(s) {
+  $("toast").textContent = s;
+  $("toast").classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $("toast").classList.remove("show"), 2800);
+}
+const fmt = (s) =>
+  `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart( 2, "0" )}`;
+const total = () => current.items.reduce((a, b) => a + b.seconds, 0);
+function syncForm() {
+  current.title = $("courseTitle").value.trim() || "未命名课程";
+  current.targetMinutes = Math.max(
+    1,
+    Math.min(600, Number($("targetMinutes").value) || 60)
+  );
+  current.level = $("courseLevel").value;
+  current.notes = $("courseNotes").value;
+}
+function renderForm() {
+  $("courseTitle").value = current.title;
+  $("targetMinutes").value = current.targetMinutes;
+  $("courseLevel").value = current.level;
+  $("courseNotes").value = current.notes;
+  renderSequence();
+}
+function renderSequence() {
+  const s = total(),
+    delta = current.targetMinutes * 60 - s;
+  $("stats").textContent = `已编排 ${current.items.length} 个动作 · ${fmt( s )} / 目标 ${fmt(current.targetMinutes * 60)} · ${ delta === 0 ? "恰好达到目标" : delta > 0 ? `还差 ${fmt(delta)}` : `超出 ${fmt(-delta)}` }`;
+  const box = $("sequence");
+  box.replaceChildren();
+  if (!current.items.length) {
+    const el = document.createElement("div");
+    el.className = "empty";
+    el.textContent = "还没有体式，点击「添加体式」开始编排";
+    box.append(el);
+    return;
+  }
+  current.items.forEach((item, i) => {
+    const p = poseById(item.poseId),
+      el = document.createElement("div");
+    el.className = "seq-item";
+    const info = document.createElement("div");
+    const h = document.createElement("h3");
+    h.textContent = `${i + 1}. ${p?.name || "未知体式（已保留）"}`;
+    const sm = document.createElement("small");
+    sm.textContent = p ? `${p.sanskrit} · ${p.category}` : item.poseId;
+    info.append(h, sm);
+    const ctrl = document.createElement("div");
+    ctrl.className = "seq-controls";
+    const secs = document.createElement("input");
+    secs.type = "number";
+    secs.min = "1";
+    secs.max = "600";
+    secs.value = String(Math.ceil(item.seconds / 60));
+    secs.title = "动作时长（分钟）";
+    secs.setAttribute("aria-label", `${p?.name || "体式"}时长（分钟）`);
+    secs.addEventListener("change", () => {
+      const v = Number(secs.value);
+      if (!Number.isInteger(v) || v < 1 || v > 600) {
+        notify("动作时长必须为1–600分钟");
+        secs.value = String(Math.ceil(item.seconds / 60));
+        return;
+      }
+      item.seconds = v * 60;
+      renderSequence();
+    });
+    const btn = (label, fn, disabled = false) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.disabled = disabled;
+      b.addEventListener("click", fn);
+      ctrl.append(b);
+    };
+    ctrl.append(secs);
+    btn("↑", () => move(i, -1), i === 0);
+    btn("↓", () => move(i, 1), i === current.items.length - 1);
+    btn("删除", () => {
+      current.items.splice(i, 1);
+      renderSequence();
+    });
+    const note = document.createElement("div");
+    note.className = "seq-note";
+    const inp = document.createElement("input");
+    inp.placeholder = "该体式教学备注（可选）";
+    inp.value = item.note || "";
+    inp.maxLength = 500;
+    inp.addEventListener("input", () => (item.note = inp.value));
+    note.append(inp);
+    el.append(info, ctrl, note);
+    box.append(el);
+  });
+}
+function move(i, d) {
+  const j = i + d;
+  if (j < 0 || j >= current.items.length) return;
+  [current.items[i], current.items[j]] = [current.items[j], current.items[i]];
+  renderSequence();
+}
+function addPose(id) {
+  const p = poseById(id);
+  if (!p) return;
+  current.items.push({
+    id: uid(),
+    poseId: id,
+    seconds: p.defaultSeconds,
+    note: "",
+  });
+  renderSequence();
+  notify(`已添加：${p.name}`);
+}
+function showTab(name) {
+  document
+    .querySelectorAll(".tab")
+    .forEach((x) => x.classList.toggle("hidden", x.id !== name));
+  document
+    .querySelectorAll("nav button")
+    .forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
+  if (name === "saved") renderSaved();
+  if (name === "library") renderLibrary();
+}
+document
+  .querySelectorAll("nav button")
+  .forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+const categories = [...new Set(poses.map((p) => p.category))];
+categories.forEach((c) => {
+  const op = document.createElement("option");
+  op.value = c;
+  op.textContent = c;
+  $("filterCategory").append(op);
+});
+function match(p, q, c = "") {
+  q = q.trim().toLowerCase();
+  return (
+    (!c || p.category === c) &&
+    [p.name, p.sanskrit, p.english].some((v) => v.toLowerCase().includes(q))
+  );
+}
+function renderLibrary() {
+  const box = $("poseGrid");
+  box.replaceChildren();
+  const arr = poses.filter((p) =>
+    match(p, $("searchPose").value, $("filterCategory").value)
+  );
+  for (const p of arr) {
+    const el = document.createElement("div");
+    el.className = "pose-card";
+    const name = document.createElement("strong");
+    name.textContent = p.name;
+    const desc = document.createElement("small");
+    desc.textContent = `${p.sanskrit} · ${p.category} · ${p.level}`;
+    const tag = document.createElement("div");
+    tag.className = `tag ${p.linyStatus === "approved" ? "" : "unreviewed"}`;
+    tag.textContent =
+      p.linyStatus === "approved" ? "Liny V3.2 体式已验收" : "Liny 素材未审核";
+    const b = document.createElement("button");
+    b.textContent = "添加到当前课程";
+    b.addEventListener("click", () => {
+      syncForm();
+      addPose(p.id);
+    });
+    el.append(name, desc, tag, b);
+    box.append(el);
+  }
+  if (!arr.length) {
+    box.textContent = "没有匹配的体式";
+  }
+}
+$("searchPose").addEventListener("input", renderLibrary);
+$("filterCategory").addEventListener("change", renderLibrary);
+function renderPicker() {
+  const box = $("pickerList");
+  box.replaceChildren();
+  poses
+    .filter((p) => match(p, $("pickerSearch").value))
+    .forEach((p) => {
+      const row = document.createElement("div");
+      row.className = "picker-item";
+      const label = document.createElement("div");
+      const strong = document.createElement("strong");
+      strong.textContent = p.name;
+      const sm = document.createElement("small");
+      sm.textContent = `${p.sanskrit} · 默认${fmt(p.defaultSeconds)}`;
+      label.append(strong, sm);
+      const b = document.createElement("button");
+      b.textContent = "添加";
+      b.addEventListener("click", () => addPose(p.id));
+      row.append(label, b);
+      box.append(row);
+    });
+}
+$("addPose").addEventListener("click", () => {
+  $("pickerSearch").value = "";
+  renderPicker();
+  $("poseDialog").showModal();
+});
+$("pickerSearch").addEventListener("input", renderPicker);
+$("closePoseDialog").addEventListener("click", () => $("poseDialog").close());
+for (const id of ["courseTitle", "targetMinutes", "courseLevel", "courseNotes"])
+  $(id).addEventListener("input", () => {
+    syncForm();
+    renderSequence();
+  });
+function save() {
+  syncForm();
+  current.updatedAt = new Date().toISOString();
+  const i = saved.findIndex((x) => x.id === current.id);
+  const snapshot = structuredClone(current);
+  if (i < 0) saved.unshift(snapshot);
+  else saved[i] = snapshot;
+  if (persist()) notify("课程已保存到本浏览器");
+}
+$("saveCourse").addEventListener("click", save);
+function duplicate() {
+  syncForm();
+  current = {
+    ...structuredClone(current),
+    id: uid(),
+    title: `${current.title}（副本）`,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    items: current.items.map((i) => ({ ...i, id: uid() })),
+  };
+  renderForm();
+  save();
+  showTab("editor");
+}
+$("duplicateCurrent").addEventListener("click", duplicate);
+$("newCourse").addEventListener("click", () => {
+  if (
+    current.items.length &&
+    !confirm("新建课程将清空当前编辑区，未保存的修改会丢失。继续吗？")
+  )
+    return;
+  current = fresh();
+  renderForm();
+  notify("已新建空白课程");
+});
+function renderSaved() {
+  const box = $("savedList");
+  box.replaceChildren();
+  if (!saved.length) {
+    const el = document.createElement("div");
+    el.className = "empty";
+    el.textContent = "尚无已保存课程";
+    box.append(el);
+    return;
+  }
+  saved.forEach((c) => {
+    const row = document.createElement("div");
+    row.className = "saved-item";
+    const info = document.createElement("div");
+    const strong = document.createElement("strong");
+    strong.textContent = c.title;
+    const sm = document.createElement("small");
+    sm.textContent = `${c.items.length}个体式 · ${fmt( c.items.reduce((s, i) => s + i.seconds, 0) )} · ${new Date(c.updatedAt).toLocaleString("zh-CN")}`;
+    info.append(strong, sm);
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const mk = (label, fn) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.addEventListener("click", fn);
+      actions.append(b);
+    };
+    mk("打开", () => {
+      current = structuredClone(c);
+      renderForm();
+      showTab("editor");
+    });
+    mk("复制", () => {
+      current = structuredClone(c);
+      duplicate();
+    });
+    mk("删除", () => {
+      if (!confirm(`确定删除「${c.title}」吗？`)) return;
+      saved = saved.filter((x) => x.id !== c.id);
+      if (persist()) {
+        renderSaved();
+        notify("已删除课程");
+      }
+    });
+    row.append(info, actions);
+    box.append(row);
+  });
+}
+$("exportData").addEventListener("click", () => {
+  const blob = new Blob(
+    [
+      JSON.stringify(
+        { format: "yoga-class-assistant", version: 1, courses: saved },
+        null,
+        2
+      ),
+    ],
+    { type: "application/json" }
+  );
+  const url = URL.createObjectURL(blob),
+    a = document.createElement("a");
+  a.href = url;
+  a.download = "瑜伽课堂助手-课程备份.json";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+$("importData").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    if (file.size > 5_000_000) throw Error("备份文件超过5MB");
+    const data = JSON.parse(await file.text());
+    if (
+      data.format !== "yoga-class-assistant" ||
+      data.version !== 1 ||
+      !Array.isArray(data.courses) ||
+      data.courses.length > 1000 ||
+      !data.courses.every(validCourse)
+    )
+      throw Error("文件格式或课程数据无效");
+    if (!confirm(`导入${data.courses.length}套课程？相同ID的课程将被覆盖。`))
+      return;
+    const map = new Map(saved.map((c) => [c.id, c]));
+    data.courses.forEach((c) => map.set(c.id, c));
+    const next = [...map.values()];
+    const old = saved;
+    saved = next;
+    if (!persist()) {
+      saved = old;
+      return;
+    }
+    renderSaved();
+    notify("导入完成");
+  } catch (err) {
+    notify(`导入失败：${err.message}`);
+  } finally {
+    e.target.value = "";
+  }
+});
+function stopTimer() {
+  running = false;
+  clearInterval(timer);
+  timer = null;
+  $("classToggle").textContent = "开始";
+}
+function loadClassPose() {
+  stopTimer();
+  const item = current.items[classIndex],
+    p = poseById(item.poseId);
+  remaining = item.seconds;
+  $("classPoseName").textContent = p?.name || "未知体式";
+  $("classPoseInfo").textContent = `${p?.sanskrit || item.poseId} · ${ item.note || "暂无教学备注" }`;
+  $("classClock").textContent = fmt(remaining);
+  $("classProgress").textContent = `第 ${classIndex + 1} / ${ current.items.length } 个体式`;
+  $("classNext").textContent = `下一个：${ poseById(current.items[classIndex + 1]?.poseId)?.name || "课程结束" }`;
+  createPoseAsset(p, $("classAsset"));
+  $("classPrev").disabled = classIndex === 0;
+  $("classNextBtn").disabled = classIndex === current.items.length - 1;
+}
+$("startClass").addEventListener("click", () => {
+  syncForm();
+  if (!current.items.length) {
+    notify("请先添加至少一个体式");
+    return;
+  }
+  classIndex = 0;
+  $("classCourseTitle").textContent = current.title;
+  loadClassPose();
+  $("classDialog").showModal();
+});
+$("classToggle").addEventListener("click", () => {
+  if (running) {
+    stopTimer();
+    return;
+  }
+  if (remaining <= 0) remaining = current.items[classIndex].seconds;
+  running = true;
+  $("classToggle").textContent = "暂停";
+  let next = Date.now() + 1000;
+  timer = setInterval(() => {
+    const now = Date.now();
+    if (now < next) return;
+    const ticks = Math.floor((now - next) / 1000) + 1;
+    next += ticks * 1000;
+    remaining = Math.max(0, remaining - ticks);
+    $("classClock").textContent = fmt(remaining);
+    if (remaining === 0) {
+      stopTimer();
+      notify("当前体式计时结束，请手动切换");
+    }
+  }, 200);
+});
+$("classPrev").addEventListener("click", () => {
+  if (classIndex > 0) {
+    classIndex--;
+    loadClassPose();
+  }
+});
+$("classNextBtn").addEventListener("click", () => {
+  if (classIndex < current.items.length - 1) {
+    classIndex++;
+    loadClassPose();
+  }
+});
+$("classReset").addEventListener("click", loadClassPose);
+$("closeClass").addEventListener("click", () => {
+  $("classDialog").close();
+  stopTimer();
+});
+$("classDialog").addEventListener("close", stopTimer);
+renderForm();
+renderLibrary();
