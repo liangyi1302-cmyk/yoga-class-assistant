@@ -5,3 +5,9 @@
 
 /* V1.1-B classroom player */
 .class-top{gap:10px}.class-top-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.class-progress-track{height:12px;max-width:620px;margin:12px auto 4px;background:#e3eee6;border-radius:999px;overflow:hidden}.class-progress-track>div{height:100%;width:0;background:#397c66;transition:width .2s linear}.class-dialog:fullscreen{width:100vw;height:100vh;max-height:100vh;border-radius:0;overflow:auto;background:#f7faf7}.class-dialog:fullscreen .class-asset{height:min(36vh,400px)}.class-dialog:fullscreen .clock{font-size:clamp(64px,10vw,130px)}@media(max-width:650px){.class-top{align-items:flex-start}.class-top-actions button{padding:8px}.class-dialog{padding:12px}.class-body{padding:6px}.class-dialog .actions{gap:6px}.class-dialog .actions button{padding:9px 11px}}
+
+/* V1.1-C: full-body asset presentation */
+.library-asset,.sequence-asset{display:flex;align-items:center;justify-content:center;background:#f6f8f5;border-radius:10px;margin-bottom:8px;overflow:hidden}
+.library-asset{height:180px}.sequence-asset{height:96px;width:min(100%,120px)}
+.library-asset img,.sequence-asset img{width:100%;height:100%;object-fit:contain}
+.library-asset .asset-placeholder,.sequence-asset .asset-placeholder{padding:8px;font-size:12px;text-align:center;border:0;background:transparent}
