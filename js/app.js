@@ -33,14 +33,85 @@ $('newCourse').addEventListener('click',()=>{if(current.items.length&&!confirm('
 function renderSaved(){const box=$('savedList');box.replaceChildren();if(!saved.length){const el=document.createElement('div');el.className='empty';el.textContent='尚无已保存课程';box.append(el);return}saved.forEach(c=>{const row=document.createElement('div');row.className='saved-item';const info=document.createElement('div');const strong=document.createElement('strong');strong.textContent=c.title;const sm=document.createElement('small');sm.textContent=`${c.items.length}个体式 · ${fmt(c.items.reduce((s,i)=>s+i.seconds,0))} · ${new Date(c.updatedAt).toLocaleString('zh-CN')}`;info.append(strong,sm);const actions=document.createElement('div');actions.className='actions';const mk=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.addEventListener('click',fn);actions.append(b)};mk('打开',()=>{current=structuredClone(c);renderForm();showTab('editor')});mk('复制',()=>{current=structuredClone(c);duplicate()});mk('删除',()=>{if(!confirm(`确定删除「${c.title}」吗？`))return;saved=saved.filter(x=>x.id!==c.id);if(persist()){renderSaved();notify('已删除课程')}});row.append(info,actions);box.append(row)})}
 $('exportData').addEventListener('click',()=>{const blob=new Blob([JSON.stringify({format:'yoga-class-assistant',version:1,courses:saved},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='瑜伽课堂助手-课程备份.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)});
 $('importData').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>5_000_000)throw Error('备份文件超过5MB');const data=JSON.parse(await file.text());if(data.format!=='yoga-class-assistant'||data.version!==1||!Array.isArray(data.courses)||data.courses.length>1000||!data.courses.every(validCourse))throw Error('文件格式或课程数据无效');if(!confirm(`导入${data.courses.length}套课程？相同ID的课程将被覆盖。`))return;const map=new Map(saved.map(c=>[c.id,c]));data.courses.forEach(c=>map.set(c.id,c));const next=[...map.values()];const old=saved;saved=next;if(!persist()){saved=old;return}renderSaved();notify('导入完成')}catch(err){notify(`导入失败：${err.message}`)}finally{e.target.value=''}});
-function stopTimer(){running=false;clearInterval(timer);timer=null;$('classToggle').textContent='开始'}
-function loadClassPose(){stopTimer();const item=current.items[classIndex],p=poseById(item.poseId);remaining=item.seconds;$('classToggle').disabled=false;$('classPoseName').textContent=p?.name||'未知体式';$('classPoseInfo').textContent=`${p?.sanskrit||item.poseId} · ${item.note||'暂无教学备注'}`;$('classClock').textContent=fmt(remaining);$('classProgress').textContent=`第 ${classIndex+1} / ${current.items.length} 个体式`;$('classNext').textContent=`下一个：${poseById(current.items[classIndex+1]?.poseId)?.name||'课程结束'}`;createPoseAsset(p,$('classAsset'));$('classPrev').disabled=classIndex===0;$('classNextBtn').disabled=classIndex===current.items.length-1}
-$('startClass').addEventListener('click',()=>{syncForm();if(!current.items.length){notify('请先添加至少一个体式');return}classIndex=0;$('classCourseTitle').textContent=current.title;loadClassPose();$('classDialog').showModal()});
-function updateClassClock(){remaining=Math.max(0,Math.ceil((classEndAt-Date.now())/1000));$('classClock').textContent=fmt(remaining);if(remaining<=0){stopTimer();if(classIndex<current.items.length-1){classIndex++;loadClassPose();beginClassTimer()}else{notify('课程已完成');$('classProgress').textContent='课程已完成 · 所有体式已结束';$('classToggle').disabled=true;$('classToggle').textContent='已结束'}}}
-function beginClassTimer(){if(remaining<=0)return;running=true;classEndAt=Date.now()+remaining*1000;$('classToggle').textContent='暂停';timer=setInterval(updateClassClock,200);updateClassClock()}
-$('classToggle').addEventListener('click',()=>{if(running){updateClassClock();if(running)stopTimer();return}if(remaining<=0)remaining=current.items[classIndex].seconds;beginClassTimer()});
-$('classExtend').addEventListener('click',()=>{remaining+=30;if(running)classEndAt+=30000;$('classClock').textContent=fmt(remaining);notify('已延长30秒')});
-$('classPrev').addEventListener('click',()=>{if(classIndex>0){classIndex--;loadClassPose()}});$('classNextBtn').addEventListener('click',()=>{if(classIndex<current.items.length-1){classIndex++;loadClassPose()}});$('classReset').addEventListener('click',loadClassPose);$('closeClass').addEventListener('click',()=>{$('classDialog').close();stopTimer()});$('classDialog').addEventListener('close',stopTimer);
+// V1.1-B classroom player: preserve the V1 course data format.
+const classTotal=()=>current.items.reduce((n,item)=>n+item.seconds,0);
+function classElapsed(){return current.items.slice(0,classIndex).reduce((n,item)=>n+item.seconds,0)+Math.max(0,current.items[classIndex].seconds-remaining)}
+function renderClassProgress(){
+ const sum=classTotal(),elapsed=Math.min(sum,Math.max(0,classElapsed()));
+ const pct=sum?Math.round(elapsed/sum*100):0;
+ $('classProgress').textContent=`第 ${classIndex+1} / ${current.items.length} 个体式 · 已完成 ${pct}%`;
+ $('classTotalProgress').textContent=`课程已进行 ${fmt(Math.floor(elapsed))} / ${fmt(sum)}`;
+ $('classProgressFill').style.width=`${pct}%`;
+ $('classProgressTrack').setAttribute('aria-valuenow',String(pct));
+}
+function stopTimer(){running=false;clearInterval(timer);timer=null;$('classToggle').textContent='继续'}
+function loadClassPose(){
+ stopTimer();const item=current.items[classIndex],p=poseById(item.poseId);
+ remaining=item.seconds;$('classToggle').disabled=false;$('classToggle').textContent='开始';
+ $('classPoseName').textContent=p?.name||'未知体式';
+ $('classPoseInfo').textContent=`${p?.sanskrit||item.poseId} · ${item.note||'暂无教学备注'}`;
+ $('classClock').textContent=fmt(remaining);
+ $('classNext').textContent=`下一个：${poseById(current.items[classIndex+1]?.poseId)?.name||'课程结束'}`;
+ createPoseAsset(p,$('classAsset'));
+ $('classPrev').disabled=classIndex===0;
+ $('classNextBtn').disabled=classIndex===current.items.length-1;
+ renderClassProgress();
+}
+$('startClass').addEventListener('click',()=>{
+ syncForm();if(!current.items.length){notify('请先添加至少一个体式');return}
+ classIndex=0;$('classCourseTitle').textContent=current.title;
+ loadClassPose();$('classDialog').showModal();
+});
+function completeClass(){
+ stopTimer();remaining=0;$('classClock').textContent='00:00';
+ $('classProgress').textContent='课程已完成 · 所有体式已结束';
+ $('classTotalProgress').textContent=`课程已进行 ${fmt(classTotal())} / ${fmt(classTotal())}`;
+ $('classProgressFill').style.width='100%';$('classProgressTrack').setAttribute('aria-valuenow','100');
+ $('classToggle').disabled=true;$('classToggle').textContent='已结束';
+ notify('课程已完成，辛苦啦！');
+}
+function updateClassClock(){
+ if(!running)return;
+ remaining=Math.max(0,Math.ceil((classEndAt-Date.now())/1000));
+ $('classClock').textContent=fmt(remaining);renderClassProgress();
+ if(remaining<=0){
+  stopTimer();
+  if(classIndex<current.items.length-1){classIndex++;loadClassPose();beginClassTimer()}
+  else completeClass();
+ }
+}
+function beginClassTimer(){
+ if(remaining<=0)return;
+ clearInterval(timer);running=true;classEndAt=Date.now()+remaining*1000;
+ $('classToggle').textContent='暂停';timer=setInterval(updateClassClock,200);updateClassClock();
+}
+$('classToggle').addEventListener('click',()=>{
+ if(running){updateClassClock();if(running)stopTimer();return}
+ if(remaining<=0)remaining=current.items[classIndex].seconds;
+ beginClassTimer();
+});
+$('classExtend').addEventListener('click',()=>{
+ if($('classToggle').disabled)return;
+ remaining+=30;if(running)classEndAt+=30000;
+ $('classClock').textContent=fmt(remaining);renderClassProgress();notify('当前体式已延长30秒');
+});
+function jumpClass(direction){
+ const next=classIndex+direction;if(next<0||next>=current.items.length)return;
+ const wasRunning=running;classIndex=next;loadClassPose();if(wasRunning)beginClassTimer();
+}
+$('classPrev').addEventListener('click',()=>jumpClass(-1));
+$('classNextBtn').addEventListener('click',()=>jumpClass(1));
+$('classReset').addEventListener('click',()=>{const wasRunning=running;loadClassPose();if(wasRunning)beginClassTimer()});
+$('closeClass').addEventListener('click',()=>{$('classDialog').close()});
+$('classDialog').addEventListener('close',()=>{stopTimer();if(document.fullscreenElement)document.exitFullscreen().catch(()=>{})});
+$('classFullscreen').addEventListener('click',async()=>{
+ try{
+  if(document.fullscreenElement){await document.exitFullscreen();return}
+  if(!$('classDialog').requestFullscreen)throw Error('unsupported');
+  await $('classDialog').requestFullscreen();
+ }catch{notify('当前浏览器不支持此全屏方式，可尝试横屏或浏览器全屏')}
+});
+document.addEventListener('fullscreenchange',()=>{$('classFullscreen').textContent=document.fullscreenElement?'退出全屏':'全屏显示'});
 
 // V1.1-A preview: timeline is derived from ordered clips, no video encoding.
 const clipStart=i=>current.items.slice(0,i).reduce((n,x)=>n+x.seconds,0);
